@@ -1,47 +1,64 @@
-local PARTYPROGRESS_DEBUG = false
-local function DebugPrint(msg)
-    if PARTYPROGRESS_DEBUG then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff33ffcc[PartyProgress]|r " .. msg)
-    end
-end
-
 local partyQuestData = {}
 local myQuestMappings = {}
 local lastBroadcastState = {}
 local previousQuestList = {}
 
+local function CanonicalPlayerName(name)
+    name = tostring(name or "")
+    name = string.gsub(name, "|c%x%x%x%x%x%x%x%x", "")
+    name = string.gsub(name, "|r", "")
+    name = string.gsub(name, "^%s+", "")
+    name = string.gsub(name, "%s+$", "")
+    name = string.gsub(name, "%-.*$", "")
+    return string.lower(name)
+end
+
 local function CleanupPartyData()
     local validPlayers = {}
-    validPlayers[UnitName("player")] = true
+    validPlayers[CanonicalPlayerName(UnitName("player"))] = true
 
     for i = 1, GetNumPartyMembers() do
         local name = UnitName("party" .. i)
         if name then
-            validPlayers[name] = true
+            validPlayers[CanonicalPlayerName(name)] = true
         end
     end
 
     for playerName in pairs(partyQuestData) do
-        if not validPlayers[playerName] then
+        if not validPlayers[CanonicalPlayerName(playerName)] then
             partyQuestData[playerName] = nil
         end
     end
 end
 
-local function RebuildQuestMappings()
-    if not pfDB or not pfDB["quests"] or not pfDB["quests"]["data"] then
-        return
-    end
-
-    if not pfDB["quests"]["enUS"] then
+local function RebuildQuestMappings(onComplete)
+    local hdbAvailable = pfQuestHearthDB and type(pfQuestHearthDB.GetQuestTargetsAsync) == "function"
+    if not hdbAvailable and (not pfDB or not pfDB["quests"] or not pfDB["quests"]["data"] or not pfDB["quests"]["enUS"]) then
+        if onComplete then onComplete() end
         return
     end
 
     local activeQuests = {}
+    local activeQuestIds = {}
+    local questIdByLogIndex = {}
+    if pfQuest and pfQuest.questlog then
+        for questId, state in pairs(pfQuest.questlog) do
+            if type(questId) == "number" and state and state.qlogid then
+                questIdByLogIndex[state.qlogid] = questId
+            end
+        end
+    end
     for qid = 1, GetNumQuestLogEntries() do
         local questTitle, _, _, _, _, complete = pfQuestCompat.GetQuestLogTitle(qid)
         if questTitle and complete ~= 1 then
             activeQuests[questTitle] = {}
+            local questId = questIdByLogIndex[qid]
+            if not questId then
+                local preserveSelection = QuestLogFrame and QuestLogFrame:IsShown()
+                local ids = pfDatabase:GetQuestIDs(qid, preserveSelection)
+                questId = ids and tonumber(ids[1])
+            end
+            if questId then activeQuestIds[questId] = { title = questTitle, objectives = activeQuests[questTitle] } end
             -- The client can briefly return nil while the quest log is
             -- unavailable during transitions such as taking a flight path.
             local numObjectives = tonumber(GetNumQuestLeaderBoards(qid)) or 0
@@ -61,6 +78,54 @@ local function RebuildQuestMappings()
                 end
             end
         end
+    end
+
+    if hdbAvailable then
+        myQuestMappings = {}
+        local pending = 0
+        for _ in pairs(activeQuestIds) do pending = pending + 1 end
+        if pending == 0 then if onComplete then onComplete() end return end
+
+        local function StoreMapping(targetName, questId, questTitle, activeObj, target)
+            myQuestMappings[targetName] = myQuestMappings[targetName] or {}
+            table.insert(myQuestMappings[targetName], {
+                quest = questTitle, questId = questId, objective = activeObj.objective,
+                current = activeObj.current, total = activeObj.total,
+                targetId = target.targetID, itemId = target.originKind == "I" and target.originID or nil,
+                targetType = target.originKind == "I" and (target.targetKind == "O" and "O" or "I") or target.targetKind
+            })
+        end
+
+        for questId, active in pairs(activeQuestIds) do
+            local currentQuestId, current = questId, active
+            pfQuestHearthDB:GetQuestTargetsAsync(currentQuestId, function(records, err)
+                if not err and records then
+                    local seen = {}
+                    for _, target in ipairs(records) do
+                        if target.phase == "obj" and (target.targetKind == "U" or target.targetKind == "O") and target.title then
+                            for _, activeObj in ipairs(current.objectives) do
+                                local matches = false
+                                if target.originKind == "I" and target.itemTitle then
+                                    matches = string.find(activeObj.objective, target.itemTitle, 1, true) and true or false
+                                elseif (target.originKind or target.targetKind) == target.targetKind then
+                                    local objectiveBase = string.gsub(activeObj.objective, " slain$", "")
+                                    objectiveBase = string.gsub(objectiveBase, " killed$", "")
+                                    matches = objectiveBase == target.title or string.find(activeObj.objective, target.title, 1, true)
+                                end
+                                local key = target.title .. ":" .. activeObj.objective
+                                if matches and not seen[key] then
+                                    seen[key] = true
+                                    StoreMapping(target.title, currentQuestId, current.title, activeObj, target)
+                                end
+                            end
+                        end
+                    end
+                end
+                pending = pending - 1
+                if pending == 0 and onComplete then onComplete() end
+            end)
+        end
+        return
     end
 
     for questId, localizedData in pairs(pfDB["quests"]["enUS"]) do
@@ -213,6 +278,7 @@ local function RebuildQuestMappings()
             end
         end
     end
+    if onComplete then onComplete() end
 end
 
 local function CaptureMyQuestData(targetKey, questTitle, objectiveText, current, total)
@@ -242,6 +308,38 @@ end
 
 local function BuildStateString(targetKey, questData)
     return string.format("%s:%s:%d:%d", targetKey, questData.quest, questData.current, questData.total)
+end
+
+local function StoreRemoteQuestProgress(sender, targetName, questTitle, objectiveText, current, total)
+    if not targetName or not questTitle then return end
+    partyQuestData[sender] = partyQuestData[sender] or {}
+    partyQuestData[sender][targetName] = partyQuestData[sender][targetName] or {}
+    for _, data in ipairs(partyQuestData[sender][targetName]) do
+        if data.quest == questTitle then
+            data.objective, data.current, data.total = objectiveText, current, total
+            return
+        end
+    end
+    table.insert(partyQuestData[sender][targetName], {
+        quest = questTitle, objective = objectiveText, current = current, total = total
+    })
+end
+
+local function ProcessHDBPartyEntry(sender, targetType, targetId, questId, current, total, objectiveText)
+    if not pfQuestHearthDB or type(pfQuestHearthDB.GetQuestMapPinsAsync) ~= "function" then return false end
+    local accepted = pfQuestHearthDB:GetQuestMapPinsAsync(questId, function(result, err)
+        if err or not result then return end
+        local seen = {}
+        for _, target in ipairs(result.pins or {}) do
+            local matches = (targetType == "I" and target.originKind == "I" and target.originID == targetId)
+                or (targetType ~= "I" and target.targetKind == targetType and target.targetID == targetId)
+            if matches and target.title and not seen[target.title] then
+                seen[target.title] = true
+                StoreRemoteQuestProgress(sender, target.title, result.title, objectiveText, current, total)
+            end
+        end
+    end)
+    return accepted and true or false
 end
 
 local function ShareQuestData(forceFullSync)
@@ -276,7 +374,6 @@ local function ShareQuestData(forceFullSync)
             if questId then
                 local msg = string.format("REMOVEQ:%d:%s", questId, questTitle)
                 SendAddonMessage("pfqt", msg, channel)
-                DebugPrint("REMOVE broadcast - Quest: " .. questTitle .. " (ID: " .. questId .. ")")
             end
         end
     end
@@ -380,7 +477,6 @@ local function ShareQuestData(forceFullSync)
     lastBroadcastState = currentState
 
     if table.getn(changedEntries) == 0 then
-        DebugPrint("no changes to broadcast")
         return
     end
 
@@ -409,10 +505,15 @@ local function ShareQuestData(forceFullSync)
 end
 
 local function ProcessQuestData(sender, message)
+    -- Turtle may qualify addon-message senders with a realm suffix while
+    -- UnitName returns the short name. Keep storage, cleanup, and the local
+    -- echo guard on the same form.
+    local _, _, shortSender = string.find(sender or "", "^([^-]+)")
+    sender = shortSender or sender
     -- Some Turtle clients also fire CHAT_MSG_ADDON for messages we send to the
     -- party. Local progress is already rendered by the normal quest tooltip;
     -- retaining it here produces a duplicate line labelled with our own name.
-    if sender == UnitName("player") then
+    if CanonicalPlayerName(sender) == CanonicalPlayerName(UnitName("player")) then
         return
     end
 
@@ -459,6 +560,10 @@ local function ProcessQuestData(sender, message)
                     objectiveText = "Quest Objective"
                 end
 
+                if ProcessHDBPartyEntry(sender, targetType, targetId, questId, current, total, objectiveText) then
+                    -- HearthDB resolves both the quest title and every matching
+                    -- source name asynchronously; no loaded Lua tables needed.
+                else
                 local questTitle = nil
                 if pfDB and pfDB["quests"] and pfDB["quests"]["enUS"] and pfDB["quests"]["enUS"][questId] then
                     questTitle = pfDB["quests"]["enUS"][questId]["T"]
@@ -564,13 +669,14 @@ local function ProcessQuestData(sender, message)
                         end
                     end
                 end
+                end
             end
         end
     end
 end
 
 local function GetClassColor(playerName)
-    if playerName == UnitName("player") then
+    if CanonicalPlayerName(playerName) == CanonicalPlayerName(UnitName("player")) then
         local _, class = UnitClass("player")
         if class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class] then
             local classColor = RAID_CLASS_COLORS[class]
@@ -580,7 +686,7 @@ local function GetClassColor(playerName)
 
     for i = 1, GetNumPartyMembers() do
         local name = UnitName("party" .. i)
-        if name == playerName then
+        if CanonicalPlayerName(name) == CanonicalPlayerName(playerName) then
             local _, class = UnitClass("party" .. i)
             if class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class] then
                 local classColor = RAID_CLASS_COLORS[class]
@@ -598,7 +704,7 @@ local function BuildQuestGroups(matchedKey)
 
     local localPlayerName = UnitName("player")
     for playerName, targets in pairs(partyQuestData) do
-        if playerName ~= localPlayerName and targets[matchedKey] then
+        if CanonicalPlayerName(playerName) ~= CanonicalPlayerName(localPlayerName) and targets[matchedKey] then
             for _, data in ipairs(targets[matchedKey]) do
                 questGroups[data.quest] = questGroups[data.quest] or {}
 
@@ -664,10 +770,10 @@ local function HookGameTooltip()
     watcher:SetScript("OnShow", function()
         local unitName = UnitName("mouseover")
         if not unitName then return end
-        if UnitIsPlayer("mouseover") then DebugPrint("HookGameTooltip: skipped, mouseover is a player") return end
+        if UnitIsPlayer("mouseover") then return end
 
         local featureEnabled = pfQuest_config and pfQuest_config["showPartyProgress"] == "1"
-        if not featureEnabled then DebugPrint("HookGameTooltip: skipped, showPartyProgress disabled") return end
+        if not featureEnabled then return end
 
         local hasData = false
         for _, targets in pairs(partyQuestData) do
@@ -676,7 +782,6 @@ local function HookGameTooltip()
                 break
             end
         end
-        DebugPrint("HookGameTooltip: unit=" .. unitName .. " hasData=" .. tostring(hasData))
         if not hasData then return end
 
         AddQuestGroupLines(GameTooltip, BuildQuestGroups(unitName), function(questName)
@@ -711,7 +816,6 @@ local function HookPfQuestTooltip()
         local inParty = GetNumPartyMembers() > 0
         local featureEnabled = pfQuest_config and pfQuest_config["showPartyProgress"] == "1"
 
-        DebugPrint("ShowTooltip: targetKey=" .. tostring(targetKey) .. " tooltipName=" .. tostring(tooltipName) .. " metaQuest=" .. tostring(meta["quest"]))
 
         if meta["quest"] and inParty and featureEnabled and targetKey then
             for qid = 1, GetNumQuestLogEntries() do
@@ -764,7 +868,6 @@ local function HookPfQuestTooltip()
             end
         end
 
-        DebugPrint("ShowTooltip: hasPartyData=" .. tostring(hasPartyData) .. " matchedKey=" .. tostring(matchedKey) .. " mouseoverExists=" .. tostring(UnitExists("mouseover")))
 
         if hasPartyData and matchedKey and not UnitExists("mouseover") then
             local oldquest = meta["quest"]
@@ -772,7 +875,6 @@ local function HookPfQuestTooltip()
             local ok = pcall(orig_ShowTooltip, self, meta, tooltip)
             meta["quest"] = oldquest
             if not ok then
-                DebugPrint("orig_ShowTooltip failed while suppressing quest line")
             end
 
             AddQuestGroupLines(tooltip, BuildQuestGroups(matchedKey))
@@ -800,11 +902,10 @@ local function QueueMappingRefresh(forceFullSync)
             this.forceFullSync = nil
             this:SetScript("OnUpdate", nil)
             if GetNumPartyMembers() > 0 then
-                RebuildQuestMappings()
-                if force then
-                    SendAddonMessage("PFQT_SYNC", "1", "PARTY")
-                end
-                ShareQuestData(force)
+                RebuildQuestMappings(function()
+                    if force then SendAddonMessage("PFQT_SYNC", "1", "PARTY") end
+                    ShareQuestData(force)
+                end)
             end
         end
     end)
@@ -820,7 +921,7 @@ eventFrame:SetScript("OnEvent", function()
         if prefix == "pfqt" then
             ProcessQuestData(sender, message)
         elseif prefix == "PFQT_SYNC" then
-            if GetNumPartyMembers() > 0 and sender ~= UnitName("player") then
+            if GetNumPartyMembers() > 0 and CanonicalPlayerName(sender) ~= CanonicalPlayerName(UnitName("player")) then
                 QueueMappingRefresh(true)
             end
         end
@@ -872,11 +973,12 @@ configExtenderFrame:SetScript("OnEvent", function()
             if math.mod(timer, 5) == 0 then
                 rebuildRetries = rebuildRetries + 1
                 if pfDB and pfDB["quests"] and pfDB["quests"]["data"] then
-                    RebuildQuestMappings()
-                    if GetNumPartyMembers() > 0 then
-                        SendAddonMessage("PFQT_SYNC", "1", "PARTY")
-                        ShareQuestData(true)
-                    end
+                    RebuildQuestMappings(function()
+                        if GetNumPartyMembers() > 0 then
+                            SendAddonMessage("PFQT_SYNC", "1", "PARTY")
+                            ShareQuestData(true)
+                        end
+                    end)
                 end
             end
         end
@@ -894,78 +996,14 @@ configExtenderFrame:SetScript("OnEvent", function()
 end)
 if pfQuest_defconfig and pfQuest_config then ExtendPfQuestConfig() end
 
-SLASH_PFQUESTDEBUG1 = "/pfqd"
-SlashCmdList["PFQUESTDEBUG"] = function(msg)
-    local lowerMsg = msg and string.lower(msg)
-    if lowerMsg == "on" then
-        PARTYPROGRESS_DEBUG = true
-        DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccpfQuest-turtle:|r Party progress debug logging ON - hover the mob to see what's happening")
-        return
-    elseif lowerMsg == "off" then
-        PARTYPROGRESS_DEBUG = false
-        DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccpfQuest-turtle:|r Party progress debug logging OFF")
-        return
-    end
-
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccpfQuest-turtle Party Progress Debug:|r")
-    DEFAULT_CHAT_FRAME:AddMessage("Party members: " .. GetNumPartyMembers())
-    DEFAULT_CHAT_FRAME:AddMessage("Feature enabled: " .. tostring(pfQuest_config and pfQuest_config["showPartyProgress"] == "1"))
-
-    local count = 0
-    for _ in pairs(myQuestMappings) do count = count + 1 end
-    DEFAULT_CHAT_FRAME:AddMessage("myQuestMappings targets: " .. count)
-    for targetKey, quests in pairs(myQuestMappings) do
-        DEFAULT_CHAT_FRAME:AddMessage("  Target: " .. targetKey)
-        for _, data in ipairs(quests) do
-            DEFAULT_CHAT_FRAME:AddMessage("    - " .. data.quest .. ": " .. data.objective .. " (" .. data.current .. "/" .. data.total .. ")")
-        end
-    end
-
-    local partyCount = 0
-    for _ in pairs(partyQuestData) do partyCount = partyCount + 1 end
-    DEFAULT_CHAT_FRAME:AddMessage("partyQuestData players: " .. partyCount)
-    for playerName, targets in pairs(partyQuestData) do
-        DEFAULT_CHAT_FRAME:AddMessage("  Player: " .. playerName)
-        for targetKey, quests in pairs(targets) do
-            DEFAULT_CHAT_FRAME:AddMessage("    Target: " .. targetKey)
-            for _, data in ipairs(quests) do
-                DEFAULT_CHAT_FRAME:AddMessage("      - " .. data.quest .. ": " .. data.objective .. " (" .. data.current .. "/" .. data.total .. ")")
-            end
-        end
-    end
-
-    if count == 0 and partyCount == 0 then
-        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000No quest data found!|r Try killing a quest mob, or run /pfqrebuild after joining a party.")
-    end
-end
-
 SLASH_PFQUEREBUILD1 = "/pfqrebuild"
 SlashCmdList["PFQUEREBUILD"] = function(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccpfQuest-turtle:|r Rebuilding quest mappings...")
-    RebuildQuestMappings()
-    if GetNumPartyMembers() > 0 then
-        SendAddonMessage("PFQT_SYNC", "1", "PARTY")
-        ShareQuestData(true)
-    end
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccpfQuest-turtle:|r Done! Run /pfqd to see results.")
-end
-
-SLASH_PFQUESTTEST1 = "/pfqtest"
-SlashCmdList["PFQUESTTEST"] = function(msg)
-    if not msg or msg == "" then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccpfQuest-turtle:|r Usage: /pfqtest <exact unit name> - then mouseover that unit")
-        return
-    end
-
-    partyQuestData["TestBuddy"] = partyQuestData["TestBuddy"] or {}
-    partyQuestData["TestBuddy"][msg] = {
-        {
-            quest = "Test Quest",
-            objective = "Kill " .. msg,
-            current = 3,
-            total = 10
-        }
-    }
-
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccpfQuest-turtle:|r Injected fake party progress for '" .. msg .. "' from TestBuddy. Mouseover it (or its map pin) to check the tooltip.")
+    RebuildQuestMappings(function()
+        if GetNumPartyMembers() > 0 then
+            SendAddonMessage("PFQT_SYNC", "1", "PARTY")
+            ShareQuestData(true)
+        end
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccpfQuest-turtle:|r Quest mappings rebuilt.")
+    end)
 end

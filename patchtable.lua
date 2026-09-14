@@ -2,6 +2,8 @@
 local loc = GetLocale()
 local dbs = { "items", "quests", "quests-itemreq", "objects", "units", "zones", "professions", "areatrigger", "refloot" }
 local noloc = { "items", "quests", "objects", "units" }
+local hdbOwnsStaticData = pfQuestHearthDB and type(pfQuestHearthDB.GetQuestMapPinsAsync) == "function"
+local hdbOwned = { items = true, quests = true, ["quests-itemreq"] = true, objects = true, units = true, refloot = true }
 
 -- Patch databases to merge TurtleWoW data
 local function patchtable(base, diff)
@@ -24,12 +26,12 @@ end
 
 local loc_core, loc_update
 for _, db in pairs(dbs) do
-  if pfDB[db]["data-turtle"] then
+  if not (hdbOwnsStaticData and hdbOwned[db]) and pfDB[db]["data-turtle"] then
     patchtable(pfDB[db]["data"], pfDB[db]["data-turtle"])
   end
 
   for loc, _ in pairs(pfDB.locales) do
-    if pfDB[db][loc] and pfDB[db][loc.."-turtle"] then
+    if not (hdbOwnsStaticData and hdbOwned[db]) and pfDB[db][loc] and pfDB[db][loc.."-turtle"] then
       loc_update = pfDB[db][loc.."-turtle"] or pfDB[db]["enUS-turtle"]
       patchtable(pfDB[db][loc], loc_update)
     end
@@ -78,10 +80,13 @@ local function IsReferenceToken(item, reference)
   return hasSources
 end
 
-for id, reference in pairs(pfDB["refloot"]["data"]) do
-  local item = pfDB["items"]["data"][id]
-  if item and IsReferenceToken(item, reference) then
-    item["reference-token"] = true
+local hdbOwnsUnitDrops = pfQuestHearthDB and type(pfQuestHearthDB.GetUnitDropsAsync) == "function"
+if not hdbOwnsUnitDrops then
+  for id, reference in pairs(pfDB["refloot"]["data"]) do
+    local item = pfDB["items"]["data"][id]
+    if item and IsReferenceToken(item, reference) then
+      item["reference-token"] = true
+    end
   end
 end
 
@@ -468,8 +473,13 @@ local function AddItemDropNodes(id, item, meta, maps, quests, items, units, obje
 end
 
 -- Item Drop System: Override SearchQuestID to show item-start quests for current quest givers
-local originalSearchQuestID = pfDatabase.SearchQuestID
-pfDatabase.SearchQuestID = function(self, id, meta, maps)
+local hdbOwnsItemStart = pfQuestHearthDB
+  and type(pfQuestHearthDB.GetQuestStartPinsAsync) == "function"
+  and type(pfQuestHearthDB.GetQuestMapPinsAsync) == "function"
+
+if not hdbOwnsItemStart then
+  local originalSearchQuestID = pfDatabase.SearchQuestID
+  pfDatabase.SearchQuestID = function(self, id, meta, maps)
   maps = originalSearchQuestID(self, id, meta, maps)
 
   local quests = pfDB["quests"]["data"]
@@ -493,7 +503,8 @@ pfDatabase.SearchQuestID = function(self, id, meta, maps)
     end
   end
 
-  return maps
+    return maps
+  end
 end
 
 local function ItemDropQuestFilter(id, plevel, pclass, prace)
@@ -552,8 +563,9 @@ local function ItemDropQuestFilter(id, plevel, pclass, prace)
   return true
 end
 
-local originalSearchQuests = pfDatabase.SearchQuests
-pfDatabase.SearchQuests = function(self, meta, maps)
+if not hdbOwnsItemStart then
+  local originalSearchQuests = pfDatabase.SearchQuests
+  pfDatabase.SearchQuests = function(self, meta, maps)
   maps = originalSearchQuests(self, meta, maps)
 
   local quests = pfDB["quests"]["data"]
@@ -603,7 +615,8 @@ pfDatabase.SearchQuests = function(self, meta, maps)
     end
   end
 
-  return maps
+    return maps
+  end
 end
 
 -- Override BuildQuestDescription to handle ITEM_START quest type
@@ -622,54 +635,53 @@ end
 
 -- Extend QuestFilter with a few title-based quest hide options (settings
 -- added in pfQuest-worldmap.lua's "Quest Filters" section)
+local function PassesTurtleTitleFilters(title)
+  if not title then return true end
+
+  if pfQuest_config["hidePvPQuests"] == "1" and not string.find(title, "Alteraci Shilling") and (
+    string.find(title, "Warsong") or string.find(title, "Arathi") or
+    string.find(title, "Alterac") or string.find(title, "Battleground") or
+    string.find(title, "Call to Skirmish")
+  ) then return false end
+
+  if pfQuest_config["hideDonationQuests"] == "1" and (
+    string.find(title, "A Donation of Wool") or string.find(title, "A Donation of Silk") or
+    string.find(title, "A Donation of Mageweave") or string.find(title, "A Donation of Runecloth") or
+    string.find(title, "Additional Runecloth")
+  ) then return false end
+
+  if pfQuest_config["hideChickenQuests"] == "1" and string.find(title, "CLUCK!") then return false end
+
+  if pfQuest_config["hideFelwoodFlowers"] == "1" and (
+    title == "Corrupted Windblossom" or title == "Corrupted Whipper Root" or
+    title == "Corrupted Songflower" or title == "Corrupted Night Dragon"
+  ) then return false end
+
+  return true
+end
+
 local originalQuestFilter = pfDatabase.QuestFilter
 pfDatabase.QuestFilter = function(self, id, plevel, pclass, prace)
   if not originalQuestFilter(self, id, plevel, pclass, prace) then
     return
   end
 
-  local title = pfDB.quests.loc[id] and pfDB.quests.loc[id].T
+  return PassesTurtleTitleFilters(pfDB.quests.loc[id] and pfDB.quests.loc[id].T)
+end
 
-  if title then
-    -- hide PvP/battleground quests
-    if pfQuest_config["hidePvPQuests"] == "1" and not string.find(title, "Alteraci Shilling") and (
-      string.find(title, "Warsong") or
-      string.find(title, "Arathi") or
-      string.find(title, "Alterac") or
-      string.find(title, "Battleground") or
-      string.find(title, "Call to Skirmish")
-    ) then
-      return
+-- HearthDB's available-quest provider applies its own eligibility pass and
+-- therefore does not call QuestFilter. Apply the same Turtle title filters to
+-- those native records before they reach the map.
+if pfDatabase.FilterHDBAvailableStartPins then
+  local originalFilterHDBAvailableStartPins = pfDatabase.FilterHDBAvailableStartPins
+  pfDatabase.FilterHDBAvailableStartPins = function(self, pins)
+    local filtered = originalFilterHDBAvailableStartPins(self, pins)
+    local visible = {}
+    for _, pin in ipairs(filtered or {}) do
+      if PassesTurtleTitleFilters(pin.quest) then table.insert(visible, pin) end
     end
-
-    -- hide cloth donation quests
-    if pfQuest_config["hideDonationQuests"] == "1" and (
-      string.find(title, "A Donation of Wool") or
-      string.find(title, "A Donation of Silk") or
-      string.find(title, "A Donation of Mageweave") or
-      string.find(title, "A Donation of Runecloth") or
-      string.find(title, "Additional Runecloth")
-    ) then
-      return
-    end
-
-    -- hide chicken quests
-    if pfQuest_config["hideChickenQuests"] == "1" and string.find(title, "CLUCK!") then
-      return
-    end
-
-    -- hide Felwood corrupted flower quests
-    if pfQuest_config["hideFelwoodFlowers"] == "1" and (
-      title == "Corrupted Windblossom" or
-      title == "Corrupted Whipper Root" or
-      title == "Corrupted Songflower" or
-      title == "Corrupted Night Dragon"
-    ) then
-      return
-    end
+    return visible
   end
-
-  return true
 end
 
 -- Override NodeEnter to show custom tooltips for ITEM_START nodes
@@ -815,10 +827,14 @@ end
 
 local originalNodeClick = pfMap.NodeClick
 pfMap.NodeClick = function()
-  if pfQuestLoot then
-    pfQuestLoot.lastClickTrace = "map alt=" .. tostring(IsAltKeyDown()) .. " spawn=" .. tostring(this and this.spawnid)
+  local lootModifier = IsAltKeyDown()
+  if lootModifier and this and this.worldmap and pfQuest_config["continentClickThrough"] == "1" then
+    lootModifier = IsControlKeyDown()
   end
-  if IsAltKeyDown() and this.spawnid then
+  if pfQuestLoot then
+    pfQuestLoot.lastClickTrace = "map lootModifier=" .. tostring(lootModifier) .. " spawn=" .. tostring(this and this.spawnid)
+  end
+  if lootModifier and this.spawnid then
     if pfQuestLoot and pfQuestLoot.HasDrops and pfQuestLoot.ShowPinned and pfQuestLoot.HasDrops(this.spawnid) then
       local ok, err = pcall(pfQuestLoot.ShowPinned, this)
       if not ok then
@@ -837,12 +853,18 @@ end
 -- after every minimap update and retain it for ordinary clicks.
 local function MinimapLootNodeClick()
   local altClick = IsAltKeyDown() or this.lootPanelAltMouseDown
+  local controlClick = IsControlKeyDown() or this.lootPanelControlMouseDown
+  local lootModifier = altClick
+  if lootModifier and this.worldmap and pfQuest_config["continentClickThrough"] == "1" then
+    lootModifier = controlClick
+  end
   if pfQuestLoot then
-    pfQuestLoot.lastClickTrace = "pin alt=" .. tostring(altClick) .. " spawn=" .. tostring(this.spawnid)
+    pfQuestLoot.lastClickTrace = "pin lootModifier=" .. tostring(lootModifier) .. " spawn=" .. tostring(this.spawnid)
     pfQuestLoot.lastClickedNode = this
   end
   this.lootPanelAltMouseDown = nil
-  if altClick and this.spawnid then
+  this.lootPanelControlMouseDown = nil
+  if lootModifier and this.spawnid then
     if pfQuestLoot and pfQuestLoot.HasDrops and pfQuestLoot.ShowPinned and pfQuestLoot.HasDrops(this.spawnid) then
       local ok, err = pcall(pfQuestLoot.ShowPinned, this)
       if not ok then
@@ -868,6 +890,7 @@ pfMap.UpdateNode = function(self, frame, node, color, obj, distance)
     frame:SetScript("OnClick", MinimapLootNodeClick)
     frame:SetScript("OnMouseDown", function()
       this.lootPanelAltMouseDown = IsAltKeyDown() and true or nil
+      this.lootPanelControlMouseDown = IsControlKeyDown() and true or nil
     end)
   end
 end
