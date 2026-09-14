@@ -25,7 +25,9 @@ tools needed to build its complete database.
 
 ## Install
 
-A complete Turtle alpha installation has four addon folders:
+Download the ready-to-install ZIP from the
+[Releases page](https://github.com/rivi-s/pfQuest-turtle-HDB/releases). A
+complete Turtle alpha installation has four addon folders:
 
 ```text
 Interface/AddOns/pfQuest
