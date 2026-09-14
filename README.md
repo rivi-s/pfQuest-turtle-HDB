@@ -6,7 +6,7 @@ pfQuest-turtle interface while reading both the Vanilla and Turtle data sets
 from one complete HearthDB SQLite database.
 
 This is an early English-only alpha for World of Warcraft 1.12. It requires a
-client with HearthDB support and the matching pfQuest-HDB alpha. For the regular
+client with [HearthDB](https://github.com/copypasteonly/HearthDB) support and the matching pfQuest-HDB alpha. For the regular
 Lua-database addon, use the
 [live pfQuest-turtle project](https://github.com/rivi-s/pfQuest-turtle).
 
@@ -46,7 +46,7 @@ The packaged database belongs at:
 pfQuest-HearthDB-turtle/data/pfquest-turtle.sqlite
 ```
 
-Copy the folders into `Interface/AddOns`, restart the game, and run `/pfqhdb` to
+Install [HearthDB](https://github.com/copypasteonly/HearthDB), copy the folders into `Interface/AddOns`, restart the game, and run `/pfqhdb` to
 check the provider. The addon list shows both HDB editions with a blue `[HDB]`
 label. The first alpha supports `enUS` clients only.
 
