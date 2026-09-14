@@ -1,19 +1,14 @@
 ## Interface: 11200
-## Title: |cff33ffccpf|cffffffffQuest |cffcccccc[TurtleWoW DB]
+## Title: |cff33ffccpf|cffffffffQuest-turtle |cff00aeff[HDB]
 ## Author: Shagu
 ## Contributors: Gurky, Antealis, HumbleKagu, KasVital, Haaxor1689, IcemanHHW, fatpowaranga, Bennylavaa
 ## Notes: A TurtleWoW DB extension for pfQuest
-## Version: 1.0.20
+## Version: 0.1.0-alpha.1
 ## Dependencies: pfQuest
 ## SavedVariables: pfQuest_turtlecount
 
 init\data-turtle.xml
 init\enUS-turtle.xml
-init\deDE-turtle.xml
-init\esES-turtle.xml
-init\ptBR-turtle.xml
-init\zhCN-turtle.xml
-init\ruRU-turtle.xml
 
 overwrites.lua
 
