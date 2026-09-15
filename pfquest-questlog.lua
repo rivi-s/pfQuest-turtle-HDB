@@ -72,36 +72,7 @@ questLogFrame:RegisterEvent('QUEST_PROGRESS')
 -- Use a short debounce instead of persistent state: some Turtle dialogs do not
 -- emit a follow-up event, which must never leave automation locked forever.
 local interactionLockedUntil = 0
-local recentlyRewarded = {}
-local rewardLockedUntil = 0
-
--- Turtle can keep a rewarded quest in the greeting/gossip list briefly after
--- GetQuestReward(). Do not select that stale row again while the server and
--- quest log catch up.
-local function WasRecentlyRewarded(title)
-    if not title then return false end
-    local expiresAt = recentlyRewarded[title]
-    if not expiresAt then return false end
-    if expiresAt > GetTime() then return true end
-
-    -- This is only a two-second stale-dialog guard. Remove expired entries so
-    -- a long session with many different turn-ins does not retain quest titles.
-    recentlyRewarded[title] = nil
-    return false
-end
-
-local function RememberRewardedQuest()
-    local title = GetTitleText and GetTitleText()
-    if title and title ~= "" then
-        local now = GetTime()
-        for rememberedTitle, expiresAt in pairs(recentlyRewarded) do
-            if expiresAt <= now then
-                recentlyRewarded[rememberedTitle] = nil
-            end
-        end
-        recentlyRewarded[title] = now + 2
-    end
-end
+local rewardedCurrentDialog = false
 
 local function BeginInteraction(kind)
     local now = GetTime()
@@ -306,7 +277,7 @@ local function SelectFirstCompletedActiveQuest()
     local numActiveQuests = GetNumActiveQuests()
     for i = 1, numActiveQuests do
         local title = GetActiveTitle(i)
-        if title and not WasRecentlyRewarded(title) and IsGreetingQuestReady(title) then
+        if title and IsGreetingQuestReady(title) then
             SelectActiveQuest(i)
             return true
         end
@@ -327,7 +298,7 @@ local function SelectFirstCompletedGossipActiveQuest()
     for i = 1, table.getn(active) do
         if type(active[i]) == "string" then
             questIndex = questIndex + 1
-            if not WasRecentlyRewarded(active[i]) and IsGreetingQuestReady(active[i]) then
+            if IsGreetingQuestReady(active[i]) then
                 SelectGossipActiveQuest(questIndex)
                 return true
             end
@@ -365,6 +336,11 @@ questLogFrame:SetScript("OnEvent", function()
 
     if event == "QUEST_PROGRESS" then
         EndInteraction()
+        -- A progress dialog identifies a new turn-in attempt. Reset the reward
+        -- guard here so consecutive quests with the same title can both be
+        -- completed while duplicate QUEST_COMPLETE events for one dialog are
+        -- still ignored.
+        rewardedCurrentDialog = false
         if IsQuestReadyToComplete() or IsQuestDialogueContinue() then
             CompleteQuest()
         end
@@ -372,18 +348,18 @@ questLogFrame:SetScript("OnEvent", function()
 
     if event == "QUEST_COMPLETE" then
         EndInteraction()
-        if GetTime() < rewardLockedUntil then
+        if rewardedCurrentDialog then
             return
         end
         if GetNumQuestChoices() == 0 then
             -- Some Turtle clients emit QUEST_COMPLETE more than once after a
-            -- reward is claimed. Guard the reward API itself, not only the
-            -- greeting list, so a stale completion cannot loop.
-            rewardLockedUntil = GetTime() + 2
-            RememberRewardedQuest()
+            -- reward is claimed. Guard this dialog rather than its title: two
+            -- different quests at one NPC may legitimately share that title.
+            rewardedCurrentDialog = true
             GetQuestReward()
             SchedulePostRewardRefresh()
         elseif QuestFrameRewardPanel.itemChoice and QuestFrameRewardPanel.itemChoice > 0 then
+            rewardedCurrentDialog = true
             GetQuestReward(QuestFrameRewardPanel.itemChoice)
         end
     end
