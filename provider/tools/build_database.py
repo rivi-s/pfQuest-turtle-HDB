@@ -31,6 +31,30 @@ def joined_signature(values) -> str:
     return ",".join(sorted({str(value) for value in values}))
 
 
+def validate_turtle_overrides(conn: sqlite3.Connection) -> None:
+    """Reject Turtle builds that lose hand-maintained compatibility rows."""
+    keg_objective = conn.execute(
+        """SELECT 1 FROM quest_target
+           WHERE quest_id = 41682 AND phase = 'obj'
+             AND target_kind = 'O' AND target_id = 2020173"""
+    ).fetchone()
+    if not keg_objective:
+        raise RuntimeError(
+            "Turtle override regression: quest 41682 is missing object objective 2020173"
+        )
+
+    geshgan_source = conn.execute(
+        """SELECT chance FROM item_source
+           WHERE item_id = 41783 AND source_kind = 'U' AND source_id = 62217"""
+    ).fetchone()
+    if not geshgan_source or abs(float(geshgan_source[0]) - 1.0) > 1e-9:
+        actual = geshgan_source[0] if geshgan_source else "missing"
+        raise RuntimeError(
+            "Turtle override regression: item 41783 must use unit 62217 at 1.0% "
+            f"(found {actual})"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=pathlib.Path, required=True, help="pfQuest source directory")
@@ -391,6 +415,8 @@ def main() -> None:
             raise ValueError(f"invalid spawn row: {fields[:2]!r}")
         spawn_rows.append((fields[0], int(fields[1]), *fields[2:4], int(fields[4]), fields[5]))
     conn.executemany("INSERT INTO spawn VALUES (?, ?, ?, ?, ?, ?)", spawn_rows)
+    if args.turtle_source:
+        validate_turtle_overrides(conn)
     conn.commit()
     conn.execute("VACUUM")
     conn.close()
