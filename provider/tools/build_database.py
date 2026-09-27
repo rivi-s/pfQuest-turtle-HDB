@@ -47,10 +47,10 @@ def validate_turtle_overrides(conn: sqlite3.Connection) -> None:
         """SELECT chance FROM item_source
            WHERE item_id = 41783 AND source_kind = 'U' AND source_id = 62217"""
     ).fetchone()
-    if not geshgan_source or abs(float(geshgan_source[0]) - 1.0) > 1e-9:
+    if not geshgan_source or abs(float(geshgan_source[0]) - 100.0) > 1e-9:
         actual = geshgan_source[0] if geshgan_source else "missing"
         raise RuntimeError(
-            "Turtle override regression: item 41783 must use unit 62217 at 1.0% "
+            "Turtle override regression: item 41783 must use unit 62217 at 100% "
             f"(found {actual})"
         )
 
