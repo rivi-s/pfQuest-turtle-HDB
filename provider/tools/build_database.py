@@ -224,6 +224,7 @@ def main() -> None:
           respawn TEXT NOT NULL
         );
         CREATE INDEX spawn_target_idx ON spawn(target_kind, target_id);
+        CREATE INDEX spawn_coord_idx ON spawn(target_kind, zone_id, x, y, target_id);
     """)
 
     def records(name: str):
