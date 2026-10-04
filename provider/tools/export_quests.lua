@@ -199,7 +199,7 @@ local questMetaFile = Open("quest_meta.tsv")
 local prerequisiteFile = Open("quest_prerequisite.tsv")
 for id, data in pairs(pfDB.quests.data) do
   questMetaFile:write(table.concat({
-    Safe(id), Safe(data.lvl), Safe(data.min), Safe(data.race), Safe(data.class), Safe(data.skill), Safe(data.event)
+    Safe(id), Safe(data.lvl), Safe(data.min), Safe(data.race), Safe(data.class), Safe(data.skill), Safe(data.event), Safe(pfDB.quests.repeatable and pfDB.quests.repeatable[id] and 1)
   }, SEP), ROW)
   if type(data.pre) == "table" then
     for _, prerequisiteID in ipairs(data.pre) do

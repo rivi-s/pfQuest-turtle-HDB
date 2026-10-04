@@ -190,7 +190,8 @@ def main() -> None:
           race_mask TEXT NOT NULL,
           class_mask TEXT NOT NULL,
           skill TEXT NOT NULL,
-          event TEXT NOT NULL
+          event TEXT NOT NULL,
+          repeatable TEXT NOT NULL
         );
         CREATE TABLE quest_prerequisite (
           quest_id INTEGER NOT NULL,
@@ -310,10 +311,10 @@ def main() -> None:
 
     quest_meta_rows = []
     for fields in records("quest_meta.tsv"):
-        if len(fields) != 7:
+        if len(fields) != 8:
             raise ValueError(f"invalid quest meta row: {fields[:2]!r}")
         quest_meta_rows.append((int(fields[0]), *fields[1:]))
-    conn.executemany("INSERT INTO quest_meta VALUES (?, ?, ?, ?, ?, ?, ?)", quest_meta_rows)
+    conn.executemany("INSERT INTO quest_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?)", quest_meta_rows)
 
     prerequisite_rows = []
     for fields in records("quest_prerequisite.tsv"):
