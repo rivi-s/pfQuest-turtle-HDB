@@ -1,0 +1,13 @@
+## Interface: 11200
+## Title: pfQuest-turtle-HDB Russian translations
+## Author: Rivi
+## Notes: Optional Russian quest text and settings for English clients
+## Version: 0.1.0
+## Dependencies: pfQuest, pfQuest-turtle
+
+db\quests.lua
+db\quests-turtle.lua
+db\display-names.lua
+db\display-objectives.lua
+locales.lua
+module.lua

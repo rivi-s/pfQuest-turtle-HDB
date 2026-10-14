@@ -87,3 +87,10 @@ Turtle-specific behavior here while shared behavior remains in pfQuest-HDB.
 Original pfQuest-turtle author: Shagu. Existing contributors are listed in the addon TOC.
 
 Rivi maintains this fork and contributes ongoing fixes, features, quest database corrections, and HearthDB integration.
+
+
+## Optional Russian language pack
+
+The separate **pfQuest-turtle-HDB-ruRU 0.1.0** pack adds Russian quest text and broad pfQuest UI translation on English clients. Requires the matching pfQuest and pfQuest-turtle HDB 0.2.0-beta.4 package. The main package stays English-only. Non-HDB support is planned separately.
+
+See [installation, coverage and known limitations](modules/pfQuest-turtle-HDB-ruRU/README.md). Missing/ambiguous translations fall back to English; browser searches retain English names.
